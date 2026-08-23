@@ -53,37 +53,39 @@ public class HealingService {
             throw new AccessDeniedException("Invalid X-Healer-Secret provided");
         }
 
-        // 2. Anti-Loop Protection: Ignore failures on healing branches
-        if (request.getBranch().startsWith("ai-healing/")) {
-            log.info("Ignoring failure notification on healing branch: {}", request.getBranch());
+        // 2. Normalize branch name & Anti-Loop Protection: Ignore failures on healing branches
+        String incomingBranch = request.getBranch() != null ? request.getBranch().trim() : "main";
+        if (incomingBranch.startsWith("refs/heads/")) {
+            incomingBranch = incomingBranch.substring("refs/heads/".length());
+        }
+        final String branchName = incomingBranch;
+
+        if (branchName.startsWith("ai-healing/")) {
+            log.info("Ignoring failure notification on healing branch: {}", branchName);
             return null;
         }
 
-        // 3. Find monitored repo configuration
+        // 3. Find monitored repo configuration that has autoHeal enabled
         MonitoredRepo repo = repoRepository.findAll().stream()
                 .filter(r -> r.getOwner().equalsIgnoreCase(request.getOwner()) &&
-                             r.getName().equalsIgnoreCase(request.getRepository()))
+                             r.getName().equalsIgnoreCase(request.getRepository()) &&
+                             r.isAutoHealEnabled())
                 .findFirst()
                 .orElse(null);
 
         if (repo == null) {
-            log.warn("Received failure callback for unmonitored repo: {}/{}", request.getOwner(), request.getRepository());
+            log.warn("Received failure callback for unmonitored or auto-heal disabled repo: {}/{}", request.getOwner(), request.getRepository());
             return null;
         }
 
-        // 4. Verify autoHeal is enabled for repo and this specific branch
-        if (!repo.isAutoHealEnabled()) {
-            log.info("Auto-healing disabled for repo {}/{}", repo.getOwner(), repo.getName());
-            return null;
-        }
-
-        BranchConfig branchConfig = repo.getBranches().stream()
-                .filter(b -> b.getName().equals(request.getBranch()))
+        // 4. Verify branch specific policy if configured
+        BranchConfig branchConfig = repo.getBranches() != null ? repo.getBranches().stream()
+                .filter(b -> b.getName().equalsIgnoreCase(branchName))
                 .findFirst()
-                .orElse(null);
+                .orElse(null) : null;
 
         if (branchConfig != null && !branchConfig.isHealingEnabled()) {
-            log.info("Healing disabled for branch {} in repo {}/{}", request.getBranch(), repo.getOwner(), repo.getName());
+            log.info("Healing disabled for branch {} in repo {}/{}", branchName, repo.getOwner(), repo.getName());
             return null;
         }
 
